@@ -40,7 +40,7 @@ use executors::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
             ConversationPatch,
-            patch::{convert_replace_to_add, is_add_or_replace, patch_entry_path},
+            patch::{is_add_or_replace, patch_entry_path},
         },
     },
     profile::{ExecutorConfig, ExecutorProfileId},
@@ -1091,7 +1091,7 @@ pub trait ContainerService {
                 },
             )
             .filter_map(|opt| async move { opt })
-            .map(|p| Ok::<_, std::io::Error>(LogMsg::JsonPatch(convert_replace_to_add(p))))
+            .map(|p| Ok::<_, std::io::Error>(LogMsg::JsonPatch(p)))
             .chain(futures::stream::once(async {
                 Ok::<_, std::io::Error>(LogMsg::Finished)
             }));

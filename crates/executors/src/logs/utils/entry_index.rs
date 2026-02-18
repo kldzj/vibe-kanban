@@ -43,13 +43,13 @@ impl EntryIndexProvider {
             .filter_map(|msg| {
                 if let LogMsg::JsonPatch(patch) = msg {
                     patch.iter().find_map(|op| {
-                        if let PatchOperation::Add(add) = op {
-                            add.path
-                                .strip_prefix("/entries/")
-                                .and_then(|n_str| n_str.parse::<usize>().ok())
-                        } else {
-                            None
-                        }
+                        let path = match op {
+                            PatchOperation::Add(add) => &add.path,
+                            PatchOperation::Replace(replace) => &replace.path,
+                            _ => return None,
+                        };
+                        path.strip_prefix("/entries/")
+                            .and_then(|n_str| n_str.parse::<usize>().ok())
                     })
                 } else {
                     None
@@ -79,6 +79,8 @@ impl EntryIndexProvider {
 
 #[cfg(test)]
 mod tests {
+    use workspace_utils::msg_store::MsgStore;
+
     use super::*;
 
     #[test]
@@ -109,5 +111,74 @@ mod tests {
 
         provider.next();
         assert_eq!(provider.current(), 2);
+    }
+
+    fn make_add_patch(index: usize) -> json_patch::Patch {
+        serde_json::from_value(serde_json::json!([{
+            "op": "add",
+            "path": format!("/entries/{index}"),
+            "value": {"test": "value"}
+        }]))
+        .unwrap()
+    }
+
+    fn make_replace_patch(index: usize) -> json_patch::Patch {
+        serde_json::from_value(serde_json::json!([{
+            "op": "replace",
+            "path": format!("/entries/{index}"),
+            "value": {"test": "replaced"}
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_start_from_considers_both_add_and_replace() {
+        let msg_store = MsgStore::new();
+
+        // Add an entry at index 0
+        msg_store.push(LogMsg::JsonPatch(make_add_patch(0)));
+
+        // Replace an entry at index 5 (higher than the Add at index 0)
+        msg_store.push(LogMsg::JsonPatch(make_replace_patch(5)));
+
+        // start_from should consider the Replace at index 5 and return 6
+        let provider = EntryIndexProvider::start_from(&msg_store);
+        assert_eq!(
+            provider.next(),
+            6,
+            "start_from should consider Replace operations, not just Add operations"
+        );
+    }
+
+    #[test]
+    fn test_start_from_empty_store() {
+        let msg_store = MsgStore::new();
+        let provider = EntryIndexProvider::start_from(&msg_store);
+        assert_eq!(provider.next(), 0);
+    }
+
+    #[test]
+    fn test_start_from_only_add_operations() {
+        let msg_store = MsgStore::new();
+
+        msg_store.push(LogMsg::JsonPatch(make_add_patch(3)));
+
+        let provider = EntryIndexProvider::start_from(&msg_store);
+        assert_eq!(provider.next(), 4);
+    }
+
+    #[test]
+    fn test_start_from_only_replace_operations() {
+        let msg_store = MsgStore::new();
+
+        // Only replace operations - should still find the max index
+        msg_store.push(LogMsg::JsonPatch(make_replace_patch(7)));
+
+        let provider = EntryIndexProvider::start_from(&msg_store);
+        assert_eq!(
+            provider.next(),
+            8,
+            "start_from should consider Replace operations even when no Add operations exist"
+        );
     }
 }
