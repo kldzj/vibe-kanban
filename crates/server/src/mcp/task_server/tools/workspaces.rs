@@ -10,8 +10,6 @@ use super::TaskServer;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpListWorkspacesRequest {
-    #[schemars(description = "Optional task ID to scope workspace listing")]
-    task_id: Option<Uuid>,
     #[schemars(description = "Filter by archived state")]
     archived: Option<bool>,
     #[schemars(description = "Filter by pinned state")]
@@ -30,8 +28,6 @@ struct McpListWorkspacesRequest {
 struct WorkspaceSummary {
     #[schemars(description = "Workspace ID")]
     id: String,
-    #[schemars(description = "Parent task ID")]
-    task_id: String,
     #[schemars(description = "Workspace branch")]
     branch: String,
     #[schemars(description = "Whether the workspace is archived")]
@@ -83,7 +79,6 @@ impl TaskServer {
     async fn list_workspaces(
         &self,
         Parameters(McpListWorkspacesRequest {
-            task_id,
             archived,
             pinned,
             branch,
@@ -92,11 +87,7 @@ impl TaskServer {
             offset,
         }): Parameters<McpListWorkspacesRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut url = self.url("/api/task-attempts");
-        if let Some(task_id) = task_id {
-            url = format!("{url}?task_id={task_id}");
-        }
-
+        let url = self.url("/api/task-attempts");
         let mut workspaces: Vec<Workspace> = match self.send_json(self.client.get(&url)).await {
             Ok(ws) => ws,
             Err(e) => return Ok(e),
@@ -134,7 +125,6 @@ impl TaskServer {
             .take(limit)
             .map(|workspace| WorkspaceSummary {
                 id: workspace.id.to_string(),
-                task_id: workspace.task_id.to_string(),
                 branch: workspace.branch,
                 archived: workspace.archived,
                 pinned: workspace.pinned,

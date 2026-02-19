@@ -8,11 +8,10 @@ import {
 } from 'shared/remote-types';
 import { useScratch } from '@/hooks/useScratch';
 import { useDebouncedCallback } from '@/hooks/useDebouncedCallback';
-import { useProjects } from '@/hooks/useProjects';
 import { useWorkspaceCreateDefaults } from '@/hooks/useWorkspaceCreateDefaults';
 import { useUserSystem } from '@/components/ConfigProvider';
 import { useShape } from '@/lib/electric/hooks';
-import { projectsApi } from '@/lib/api';
+import { repoApi } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -46,7 +45,6 @@ type Phase = 'loading' | 'ready' | 'error';
 interface DraftState {
   phase: Phase;
   error: string | null;
-  projectId: string | null;
   repos: SelectedRepo[];
   message: string;
   linkedIssue: LinkedIssue | null;
@@ -81,7 +79,6 @@ type DraftAction =
 const draftInitialState: DraftState = {
   phase: 'loading',
   error: null,
-  projectId: null,
   repos: [],
   message: '',
   linkedIssue: null,
@@ -104,9 +101,6 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
         phase: 'error',
         error: action.error,
       };
-
-    case 'SET_PROJECT':
-      return { ...state, projectId: action.projectId };
 
     case 'ADD_REPO': {
       // Don't add duplicate repos
@@ -225,8 +219,6 @@ interface UseCreateModeStateParams {
 }
 
 interface UseCreateModeStateResult {
-  // State
-  selectedProjectId: string | null;
   repos: Repo[];
   targetBranches: Record<string, string | null>;
   hasResolvedInitialRepoDefaults: boolean;
@@ -236,9 +228,6 @@ interface UseCreateModeStateResult {
   hasInitialValue: boolean;
   linkedIssue: LinkedIssue | null;
   executorConfig: ExecutorConfig | null;
-
-  // Actions
-  setSelectedProjectId: (id: string | null) => void;
   setMessage: (message: string) => void;
   addRepo: (repo: Repo) => void;
   removeRepo: (repoId: string) => void;
@@ -261,7 +250,6 @@ export function useCreateModeState({
 }: UseCreateModeStateParams): UseCreateModeStateResult {
   const location = useLocation();
   const navigate = useNavigate();
-  const { projectsById, isLoading: projectsLoading } = useProjects();
   const { profiles } = useUserSystem();
   const scratchId = draftId ?? DRAFT_WORKSPACE_ID;
 
@@ -302,7 +290,6 @@ export function useCreateModeState({
   useEffect(() => {
     if (hasInitialized.current) return;
     if (scratchLoading) return;
-    if (!projectsById) return;
     if (!profiles) return;
 
     hasInitialized.current = true;
@@ -312,7 +299,10 @@ export function useCreateModeState({
     if (
       initialState === undefined &&
       !draftId &&
-      (navState?.initialPrompt || navState?.linkedIssue)
+      (navState?.initialPrompt ||
+        navState?.linkedIssue ||
+        (navState?.preferredRepos?.length ?? 0) > 0 ||
+        navState?.project_id)
     ) {
       navigate(
         {
@@ -327,14 +317,11 @@ export function useCreateModeState({
     initializeState({
       navState,
       scratch,
-      initialProjectId,
-      projectsById,
       isValidProfile,
       dispatch,
     });
   }, [
     scratchLoading,
-    projectsById,
     profiles,
     initialState,
     draftId,
@@ -352,14 +339,14 @@ export function useCreateModeState({
   const hasAttemptedAutoSelect = useRef(false);
   const repoDefaultsSourceRef = useRef<string | null>(null);
   const hasAppliedRepoDefaultsRef = useRef(false);
-  const initialProjectIdRef = useRef(initialProjectId);
   const sourceWorkspaceId = useMemo(() => {
     if (state.linkedIssue) {
-      return getLatestWorkspaceIdForRemoteProject({
+      const linkedIssueWorkspaceId = getLatestWorkspaceIdForRemoteProject({
         remoteWorkspaces,
         localWorkspaceIds,
         remoteProjectId: state.linkedIssue.remoteProjectId,
       });
+      return linkedIssueWorkspaceId ?? lastWorkspaceId;
     }
     return lastWorkspaceId;
   }, [state.linkedIssue, remoteWorkspaces, localWorkspaceIds, lastWorkspaceId]);
@@ -388,47 +375,9 @@ export function useCreateModeState({
   useEffect(() => {
     if (state.phase !== 'ready') return;
     if (hasAttemptedAutoSelect.current) return;
-    if (state.projectId) return;
-    if (!projectsById || projectsLoading) return;
 
     hasAttemptedAutoSelect.current = true;
-
-    // Priority 1: Use initialProjectId from last workspace
-    if (
-      initialProjectIdRef.current &&
-      initialProjectIdRef.current in projectsById
-    ) {
-      dispatch({ type: 'SET_PROJECT', projectId: initialProjectIdRef.current });
-      return;
-    }
-
-    // Priority 2: Fetch projects via API for deterministic ordering
-    projectsApi
-      .getAll()
-      .then((projects) => {
-        if (projects.length > 0) {
-          // Pick the oldest project (last in DESC-ordered list) as a stable default
-          const oldest = projects[projects.length - 1];
-          dispatch({ type: 'SET_PROJECT', projectId: oldest.id });
-        } else {
-          // Priority 3: Create default project
-          projectsApi
-            .create({ name: 'My first project', repositories: [] })
-            .then((newProject) => {
-              dispatch({ type: 'SET_PROJECT', projectId: newProject.id });
-            })
-            .catch((e) => {
-              console.error(
-                '[useCreateModeState] Failed to create default project:',
-                e
-              );
-            });
-        }
-      })
-      .catch((e) => {
-        console.error('[useCreateModeState] Failed to fetch projects:', e);
-      });
-  }, [state.phase, state.projectId, projectsById, projectsLoading]);
+  }, [state.phase]);
 
   // ============================================================================
   // Auto-apply repos/branches defaults for fresh drafts
@@ -469,7 +418,6 @@ export function useCreateModeState({
     async (data: DraftWorkspaceData) => {
       const isEmpty =
         !data.message.trim() &&
-        !data.project_id &&
         data.repos.length === 0 &&
         !data.executor_config;
 
@@ -491,7 +439,6 @@ export function useCreateModeState({
 
     debouncedSave({
       message: state.message,
-      project_id: state.projectId,
       repos: state.repos.map((r) => ({
         repo_id: r.repo.id,
         target_branch: r.targetBranch ?? '',
@@ -509,7 +456,6 @@ export function useCreateModeState({
   }, [
     state.phase,
     state.message,
-    state.projectId,
     state.repos,
     state.linkedIssue,
     state.executorConfig,
@@ -563,10 +509,6 @@ export function useCreateModeState({
   // ============================================================================
   // Actions
   // ============================================================================
-  const setSelectedProjectId = useCallback((id: string | null) => {
-    dispatch({ type: 'SET_PROJECT', projectId: id });
-  }, []);
-
   const setMessage = useCallback((message: string) => {
     dispatch({ type: 'SET_MESSAGE', message });
   }, []);
@@ -606,7 +548,6 @@ export function useCreateModeState({
   }, []);
 
   return {
-    selectedProjectId: state.projectId,
     repos,
     targetBranches,
     hasResolvedInitialRepoDefaults,
@@ -616,7 +557,6 @@ export function useCreateModeState({
     hasInitialValue: state.phase === 'ready',
     linkedIssue: state.linkedIssue,
     executorConfig: state.executorConfig,
-    setSelectedProjectId,
     setMessage,
     addRepo,
     removeRepo,
@@ -635,33 +575,71 @@ export function useCreateModeState({
 interface InitializeParams {
   navState: CreateModeInitialState | null;
   scratch: ReturnType<typeof useScratch>['scratch'];
-  initialProjectId: string | undefined;
-  projectsById: Record<string, { id: string; created_at: unknown }>;
   isValidProfile: (config: ExecutorConfig | null) => boolean;
   dispatch: React.Dispatch<DraftAction>;
+}
+
+async function resolveNavPreferredRepos(
+  preferredRepos: NonNullable<CreateModeInitialState['preferredRepos']>
+): Promise<SelectedRepo[]> {
+  const reposById = new Map<string, Repo>();
+
+  const missingRepoIds = preferredRepos
+    .map((r) => r.repo_id)
+    .filter((repoId) => !reposById.has(repoId));
+
+  if (missingRepoIds.length > 0) {
+    const fetchedRepos = await Promise.all(
+      missingRepoIds.map(async (repoId) => {
+        try {
+          return await repoApi.getById(repoId);
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const repo of fetchedRepos) {
+      if (repo) {
+        reposById.set(repo.id, repo);
+      }
+    }
+  }
+
+  return preferredRepos.flatMap((preferredRepo) => {
+    const repo = reposById.get(preferredRepo.repo_id);
+    if (!repo) return [];
+
+    return [
+      {
+        repo,
+        targetBranch: preferredRepo.target_branch || null,
+      },
+    ];
+  });
 }
 
 async function initializeState({
   navState,
   scratch,
-  initialProjectId,
-  projectsById,
   isValidProfile,
   dispatch,
 }: InitializeParams): Promise<void> {
   try {
-    // Priority 1: Navigation state (initialPrompt and/or linkedIssue)
+    // Priority 1: Navigation state
     const hasInitialPrompt = !!navState?.initialPrompt;
     const hasLinkedIssue = !!navState?.linkedIssue;
+    const hasPreferredRepos = (navState?.preferredRepos?.length ?? 0) > 0;
+    const hasProjectId = !!navState?.project_id;
 
-    if (hasInitialPrompt || hasLinkedIssue) {
+    if (
+      hasInitialPrompt ||
+      hasLinkedIssue ||
+      hasPreferredRepos ||
+      hasProjectId
+    ) {
       const data: Partial<DraftState> = {};
       let appliedNavState = false;
-
-      // Handle project_id from navigation state (e.g., from duplicate/spin-off)
-      if (navState?.project_id && navState.project_id in projectsById) {
-        data.projectId = navState.project_id;
-      }
 
       // Handle initial prompt
       if (hasInitialPrompt) {
@@ -673,6 +651,17 @@ async function initializeState({
       if (hasLinkedIssue) {
         data.linkedIssue = navState!.linkedIssue!;
         appliedNavState = true;
+      }
+
+      // Handle preferred repos + target branches (e.g., from duplicate/spin-off)
+      if (navState?.preferredRepos && navState.preferredRepos.length > 0) {
+        const resolvedRepos = await resolveNavPreferredRepos(
+          navState.preferredRepos
+        );
+        if (resolvedRepos.length > 0) {
+          data.repos = resolvedRepos;
+          appliedNavState = true;
+        }
       }
 
       if (appliedNavState) {
@@ -693,11 +682,6 @@ async function initializeState({
       // Restore message
       if (scratchData.message) {
         restoredData.message = scratchData.message;
-      }
-
-      // Restore project if it still exists
-      if (scratchData.project_id && scratchData.project_id in projectsById) {
-        restoredData.projectId = scratchData.project_id;
       }
 
       // Restore executor config if profile is still valid
@@ -725,7 +709,7 @@ async function initializeState({
     // Priority 3: Fresh start
     dispatch({
       type: 'INIT_COMPLETE',
-      data: { projectId: initialProjectId ?? null },
+      data: {},
     });
   } catch (e) {
     console.error('[useCreateModeState] Initialization failed:', e);

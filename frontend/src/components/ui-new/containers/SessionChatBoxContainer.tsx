@@ -38,6 +38,7 @@ import {
   useWorkspacePanelState,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/stores/useUiPreferencesStore';
+import { useInspectModeStore } from '@/stores/useInspectModeStore';
 import { Actions, type ActionDefinition } from '../actions';
 import { SettingsDialog } from '../dialogs/SettingsDialog';
 import {
@@ -71,8 +72,6 @@ function computeExecutionStatus(params: {
 interface SharedProps {
   /** Available sessions for this workspace */
   sessions: Session[];
-  /** Project ID for file search in typeahead */
-  projectId: string | undefined;
   /** Number of files changed in current session */
   filesChanged: number;
   /** Number of lines added */
@@ -123,7 +122,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     mode,
     sessions,
-    projectId,
     filesChanged,
     linesAdded,
     linesRemoved,
@@ -341,6 +339,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     },
     [setLocalMessage]
   );
+
+  // Auto-paste component context from inspect mode
+  const pendingComponentMarkdown = useInspectModeStore(
+    (s) => s.pendingComponentMarkdown
+  );
+  const clearPendingComponentMarkdown = useInspectModeStore(
+    (s) => s.clearPendingComponentMarkdown
+  );
+
+  useEffect(() => {
+    if (pendingComponentMarkdown) {
+      handleInsertMarkdown(pendingComponentMarkdown);
+      clearPendingComponentMarkdown();
+    }
+  }, [
+    pendingComponentMarkdown,
+    handleInsertMarkdown,
+    clearPendingComponentMarkdown,
+  ]);
 
   const { uploadFiles, localImages, clearUploadedImages } =
     useSessionAttachments(workspaceId, handleInsertMarkdown);
@@ -745,7 +762,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       <SessionChatBox
         status="idle"
         repoIds={repoIds}
-        projectId={projectId}
         workspaceId={workspaceId}
         tokenUsageInfo={tokenUsageInfo}
         editor={{
@@ -785,7 +801,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       onScrollToPreviousMessage={onScrollToPreviousMessage}
       repoIds={repoIds}
-      projectId={projectId}
       workspaceId={workspaceId}
       tokenUsageInfo={tokenUsageInfo}
       editor={{

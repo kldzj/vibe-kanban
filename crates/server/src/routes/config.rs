@@ -93,6 +93,7 @@ pub struct UserSystemInfo {
     /// Capabilities supported per executor (e.g., { "CLAUDE_CODE": ["SESSION_FORK"] })
     pub capabilities: HashMap<String, Vec<BaseAgentCapability>>,
     pub shared_api_base: Option<String>,
+    pub preview_proxy_port: Option<u16>,
 }
 
 // TODO: update frontend, BE schema has changed, this replaces GET /config and /config/constants
@@ -125,6 +126,7 @@ async fn get_user_system_info(
             caps
         },
         shared_api_base: deployment.shared_api_base(),
+        preview_proxy_port: crate::preview_proxy::get_proxy_port(),
     };
 
     ResponseJson(ApiResponse::success(user_system_info))
@@ -195,14 +197,6 @@ async fn track_config_events(deployment: &DeploymentImpl, old: &Config, new: &Co
 
 async fn handle_config_events(deployment: &DeploymentImpl, old: &Config, new: &Config) {
     track_config_events(deployment, old, new).await;
-
-    if !old.disclaimer_acknowledged && new.disclaimer_acknowledged {
-        // Spawn auto project setup as background task to avoid blocking config response
-        let deployment_clone = deployment.clone();
-        tokio::spawn(async move {
-            deployment_clone.trigger_auto_project_setup().await;
-        });
-    }
 }
 
 async fn get_sound(Path(sound): Path<SoundFile>) -> Result<Response, ApiError> {
